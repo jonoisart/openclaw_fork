@@ -3,7 +3,6 @@
  * Calls gateway RPC methods and returns formatted results.
  */
 
-import type { ModelCatalogEntry } from "../../../../src/agents/model-catalog.js";
 import {
   formatThinkingLevels,
   normalizeThinkLevel,
@@ -16,12 +15,17 @@ import {
   isSubagentSessionKey,
   parseAgentSessionKey,
 } from "../../../../src/routing/session-key.js";
-import { createChatModelOverride, resolveServerChatModelValue } from "../chat-model-ref.ts";
+import {
+  createChatModelOverride,
+  normalizeChatModelOverrideValue,
+  resolveServerChatModelValue,
+} from "../chat-model-ref.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type {
   AgentsListResult,
   ChatModelOverride,
   GatewaySessionRow,
+  ModelCatalogEntry,
   SessionsListResult,
   SessionsPatchResult,
 } from "../types.ts";
@@ -51,6 +55,7 @@ export async function executeSlashCommand(
   sessionKey: string,
   commandName: string,
   args: string,
+  chatModelCatalog: ModelCatalogEntry[] = [],
 ): Promise<SlashCommandResult> {
   switch (commandName) {
     case "help":
@@ -68,7 +73,7 @@ export async function executeSlashCommand(
     case "compact":
       return await executeCompact(client, sessionKey);
     case "model":
-      return await executeModel(client, sessionKey, args);
+      return await executeModel(client, sessionKey, args, chatModelCatalog);
     case "think":
       return await executeThink(client, sessionKey, args);
     case "fast":
@@ -125,6 +130,7 @@ async function executeModel(
   client: GatewayBrowserClient,
   sessionKey: string,
   args: string,
+  chatModelCatalog: ModelCatalogEntry[],
 ): Promise<SlashCommandResult> {
   if (!args) {
     try {
@@ -155,10 +161,12 @@ async function executeModel(
       key: sessionKey,
       model: args.trim(),
     });
-    const resolvedValue = resolveServerChatModelValue(
-      patched.resolved?.model ?? args.trim(),
-      patched.resolved?.modelProvider,
-    );
+    const patchedModel = patched.resolved?.model ?? args.trim();
+    const rawOverride = createChatModelOverride(patchedModel.trim());
+    const resolvedValue = rawOverride
+      ? normalizeChatModelOverrideValue(rawOverride, chatModelCatalog) ||
+        resolveServerChatModelValue(patchedModel, patched.resolved?.modelProvider)
+      : resolveServerChatModelValue(patchedModel, patched.resolved?.modelProvider);
     return {
       content: `Model set to \`${args.trim()}\`.`,
       action: "refresh",

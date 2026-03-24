@@ -8,12 +8,14 @@ import type {
 } from "../gateway/server-methods/types.js";
 import { registerInternalHook } from "../hooks/internal-hooks.js";
 import type { HookEntry } from "../hooks/types.js";
+import { registerMemoryPromptSection } from "../memory/prompt-section.js";
 import { resolveUserPath } from "../utils.js";
-import { registerPluginCommand, validatePluginCommandDefinition } from "./commands.js";
+import { registerPluginCommand, validatePluginCommandDefinition } from "./command-registration.js";
 import { normalizePluginHttpPath } from "./http-path.js";
 import { findOverlappingPluginHttpRoute } from "./http-route-overlap.js";
 import { registerPluginInteractiveHandler } from "./interactive.js";
 import { normalizeRegisteredProvider } from "./provider-validation.js";
+import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { withPluginRuntimePluginIdScope } from "./runtime/gateway-request-scope.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { defaultSlotIdForKey } from "./slots.js";
@@ -28,6 +30,7 @@ import type {
   OpenClawPluginChannelRegistration,
   OpenClawPluginCliRegistrar,
   OpenClawPluginCommandDefinition,
+  PluginConversationBindingResolvedEvent,
   OpenClawPluginHttpRouteAuth,
   OpenClawPluginHttpRouteMatch,
   OpenClawPluginHttpRouteHandler,
@@ -147,6 +150,15 @@ export type PluginCommandRegistration = {
   rootDir?: string;
 };
 
+export type PluginConversationBindingResolvedHandlerRegistration = {
+  pluginId: string;
+  pluginName?: string;
+  pluginRoot?: string;
+  handler: (event: PluginConversationBindingResolvedEvent) => void | Promise<void>;
+  source: string;
+  rootDir?: string;
+};
+
 export type PluginRecord = {
   id: string;
   name: string;
@@ -199,6 +211,7 @@ export type PluginRegistry = {
   cliRegistrars: PluginCliRegistration[];
   services: PluginServiceRegistration[];
   commands: PluginCommandRegistration[];
+  conversationBindingResolvedHandlers: PluginConversationBindingResolvedHandlerRegistration[];
   diagnostics: PluginDiagnostic[];
 };
 
@@ -229,27 +242,7 @@ const constrainLegacyPromptInjectionHook = (
   };
 };
 
-export function createEmptyPluginRegistry(): PluginRegistry {
-  return {
-    plugins: [],
-    tools: [],
-    hooks: [],
-    typedHooks: [],
-    channels: [],
-    channelSetups: [],
-    providers: [],
-    speechProviders: [],
-    mediaUnderstandingProviders: [],
-    imageGenerationProviders: [],
-    webSearchProviders: [],
-    gatewayHandlers: {},
-    httpRoutes: [],
-    cliRegistrars: [],
-    services: [],
-    commands: [],
-    diagnostics: [],
-  };
-}
+export { createEmptyPluginRegistry } from "./registry-empty.js";
 
 export function createPluginRegistry(registryParams: PluginRegistryParams) {
   const registry = createEmptyPluginRegistry();
@@ -829,6 +822,20 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     } as TypedPluginHookRegistration);
   };
 
+  const registerConversationBindingResolvedHandler = (
+    record: PluginRecord,
+    handler: (event: PluginConversationBindingResolvedEvent) => void | Promise<void>,
+  ) => {
+    registry.conversationBindingResolvedHandlers.push({
+      pluginId: record.id,
+      pluginName: record.name,
+      pluginRoot: record.rootDir,
+      handler,
+      source: record.source,
+      rootDir: record.rootDir,
+    });
+  };
+
   const normalizeLogger = (logger: PluginLogger): PluginLogger => ({
     info: logger.info,
     warn: logger.warn,
@@ -942,6 +949,10 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
               }
             }
           : () => {},
+      onConversationBindingResolved:
+        registrationMode === "full"
+          ? (handler) => registerConversationBindingResolvedHandler(record, handler)
+          : () => {},
       registerCommand:
         registrationMode === "full" ? (command) => registerCommand(record, command) : () => {},
       registerContextEngine: (id, factory) => {
@@ -968,6 +979,21 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
             message: `context engine already registered: ${id} (${result.existingOwner})`,
           });
         }
+      },
+      registerMemoryPromptSection: (builder) => {
+        if (registrationMode !== "full") {
+          return;
+        }
+        if (record.kind !== "memory") {
+          pushDiagnostic({
+            level: "error",
+            pluginId: record.id,
+            source: record.source,
+            message: "only memory plugins can register a memory prompt section",
+          });
+          return;
+        }
+        registerMemoryPromptSection(builder);
       },
       resolvePath: (input: string) => resolveUserPath(input),
       on: (hookName, handler, opts) =>
