@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -7,24 +6,21 @@ import {
   OFFICIAL_CHANNEL_CATALOG_RELATIVE_PATH,
   writeOfficialChannelCatalog,
 } from "../scripts/write-official-channel-catalog.mjs";
+import { bundledPluginRoot } from "./helpers/bundled-plugin-paths.js";
+import { cleanupTempDirs, makeTempRepoRoot, writeJsonFile } from "./helpers/temp-repo.js";
 
 const tempDirs: string[] = [];
 
 function makeRepoRoot(prefix: string): string {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(repoRoot);
-  return repoRoot;
+  return makeTempRepoRoot(tempDirs, prefix);
 }
 
 function writeJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeJsonFile(filePath, value);
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0, tempDirs.length)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  cleanupTempDirs(tempDirs);
 });
 
 describe("buildOfficialChannelCatalog", () => {
@@ -45,7 +41,7 @@ describe("buildOfficialChannelCatalog", () => {
         },
         install: {
           npmSpec: "@openclaw/whatsapp",
-          localPath: "extensions/whatsapp",
+          localPath: bundledPluginRoot("whatsapp"),
           defaultChoice: "npm",
         },
         release: {
@@ -64,7 +60,7 @@ describe("buildOfficialChannelCatalog", () => {
           blurb: "dev only",
         },
         install: {
-          localPath: "extensions/local-only",
+          localPath: bundledPluginRoot("local-only"),
         },
         release: {
           publishToNpm: false,
@@ -72,8 +68,21 @@ describe("buildOfficialChannelCatalog", () => {
       },
     });
 
-    expect(buildOfficialChannelCatalog({ repoRoot })).toEqual({
-      entries: [
+    expect(buildOfficialChannelCatalog({ repoRoot }).entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "@wecom/wecom-openclaw-plugin",
+          openclaw: expect.objectContaining({
+            channel: expect.objectContaining({
+              id: "wecom",
+              label: "WeCom",
+            }),
+            install: {
+              npmSpec: "@wecom/wecom-openclaw-plugin",
+              defaultChoice: "npm",
+            },
+          }),
+        }),
         {
           name: "@openclaw/whatsapp",
           version: "2026.3.23",
@@ -89,13 +98,12 @@ describe("buildOfficialChannelCatalog", () => {
             },
             install: {
               npmSpec: "@openclaw/whatsapp",
-              localPath: "extensions/whatsapp",
               defaultChoice: "npm",
             },
           },
         },
-      ],
-    });
+      ]),
+    );
   });
 
   it("writes the official catalog under dist", () => {
@@ -123,8 +131,11 @@ describe("buildOfficialChannelCatalog", () => {
 
     const outputPath = path.join(repoRoot, OFFICIAL_CHANNEL_CATALOG_RELATIVE_PATH);
     expect(fs.existsSync(outputPath)).toBe(true);
-    expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toEqual({
-      entries: [
+    expect(JSON.parse(fs.readFileSync(outputPath, "utf8")).entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "@wecom/wecom-openclaw-plugin",
+        }),
         {
           name: "@openclaw/whatsapp",
           openclaw: {
@@ -140,7 +151,7 @@ describe("buildOfficialChannelCatalog", () => {
             },
           },
         },
-      ],
-    });
+      ]),
+    );
   });
 });
