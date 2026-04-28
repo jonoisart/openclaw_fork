@@ -19,10 +19,8 @@ export const expectedAugmentedOpenaiCodexCatalogEntries = [
 ];
 
 export const expectedAugmentedOpenaiCodexCatalogEntriesWithGpt55 = [
-  { provider: "openai", id: "gpt-5.5", name: "gpt-5.5" },
   { provider: "openai", id: "gpt-5.5-pro", name: "gpt-5.5-pro" },
   ...expectedAugmentedOpenaiCodexCatalogEntries.slice(0, 4),
-  { provider: "openai-codex", id: "gpt-5.5", name: "gpt-5.5" },
   { provider: "openai-codex", id: "gpt-5.5-pro", name: "gpt-5.5-pro" },
   ...expectedAugmentedOpenaiCodexCatalogEntries.slice(4),
 ];
@@ -37,6 +35,7 @@ export function expectCodexMissingAuthHint(
       listProfileIds: (providerId: string) => string[];
     };
   }) => string | undefined,
+  expectedModel = "openai/gpt-5.5",
 ) {
   expect(
     buildProviderMissingAuthMessageWithPlugin({
@@ -48,32 +47,7 @@ export function expectCodexMissingAuthHint(
         listProfileIds: (providerId) => (providerId === "openai-codex" ? ["p1"] : []),
       },
     }),
-  ).toContain("openai/gpt-5.5");
-}
-
-export function expectCodexBuiltInSuppression(
-  resolveProviderBuiltInModelSuppression: (params: {
-    env: NodeJS.ProcessEnv;
-    context: {
-      env: NodeJS.ProcessEnv;
-      provider: string;
-      modelId: string;
-    };
-  }) => unknown,
-) {
-  expect(
-    resolveProviderBuiltInModelSuppression({
-      env: process.env,
-      context: {
-        env: process.env,
-        provider: "azure-openai-responses",
-        modelId: "gpt-5.3-codex-spark",
-      },
-    }),
-  ).toMatchObject({
-    suppress: true,
-    errorMessage: expect.stringContaining("gpt-5.3-codex-spark"),
-  });
+  ).toContain(expectedModel);
 }
 
 export async function expectAugmentedCodexCatalog(

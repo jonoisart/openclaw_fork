@@ -17,6 +17,7 @@ reference for **what to import** and **what you can register**.
 - First plugin? Start with [Building plugins](/plugins/building-plugins).
 - Channel plugin? See [Channel plugins](/plugins/sdk-channel-plugins).
 - Provider plugin? See [Provider plugins](/plugins/sdk-provider-plugins).
+- Tool or lifecycle hook plugin? See [Plugin hooks](/plugins/hooks).
   </Tip>
 
 ## Import convention
@@ -33,6 +34,14 @@ prevents circular dependency issues. For channel-specific entry/build helpers,
 prefer `openclaw/plugin-sdk/channel-core`; keep `openclaw/plugin-sdk/core` for
 the broader umbrella surface and shared helpers such as
 `buildChannelConfigSchema`.
+
+For channel config, publish the channel-owned JSON Schema through
+`openclaw.plugin.json#channelConfigs`. The `plugin-sdk/channel-config-schema`
+subpath is for shared schema primitives and the generic builder. OpenClaw's
+bundled plugins use `plugin-sdk/bundled-channel-config-schema` for retained
+bundled-channel schemas. Deprecated compatibility exports remain on
+`plugin-sdk/channel-config-schema-legacy`; neither bundled schema subpath is a
+pattern for new plugins.
 
 <Warning>
   Do not import provider- or channel-branded convenience seams (for example
@@ -87,19 +96,67 @@ methods:
 | `api.registerTool(tool, opts?)` | Agent tool (required or `{ optional: true }`) |
 | `api.registerCommand(def)`      | Custom command (bypasses the LLM)             |
 
+Plugin commands can set `agentPromptGuidance` when the agent needs a short,
+command-owned routing hint. Keep that text about the command itself; do not add
+provider- or plugin-specific policy to core prompt builders.
+
 ### Infrastructure
 
-| Method                                          | What it registers                       |
-| ----------------------------------------------- | --------------------------------------- |
-| `api.registerHook(events, handler, opts?)`      | Event hook                              |
-| `api.registerHttpRoute(params)`                 | Gateway HTTP endpoint                   |
-| `api.registerGatewayMethod(name, handler)`      | Gateway RPC method                      |
-| `api.registerCli(registrar, opts?)`             | CLI subcommand                          |
-| `api.registerService(service)`                  | Background service                      |
-| `api.registerInteractiveHandler(registration)`  | Interactive handler                     |
-| `api.registerEmbeddedExtensionFactory(factory)` | Pi embedded-runner extension factory    |
-| `api.registerMemoryPromptSupplement(builder)`   | Additive memory-adjacent prompt section |
-| `api.registerMemoryCorpusSupplement(adapter)`   | Additive memory search/read corpus      |
+| Method                                         | What it registers                       |
+| ---------------------------------------------- | --------------------------------------- |
+| `api.registerHook(events, handler, opts?)`     | Event hook                              |
+| `api.registerHttpRoute(params)`                | Gateway HTTP endpoint                   |
+| `api.registerGatewayMethod(name, handler)`     | Gateway RPC method                      |
+| `api.registerGatewayDiscoveryService(service)` | Local Gateway discovery advertiser      |
+| `api.registerCli(registrar, opts?)`            | CLI subcommand                          |
+| `api.registerService(service)`                 | Background service                      |
+| `api.registerInteractiveHandler(registration)` | Interactive handler                     |
+| `api.registerAgentToolResultMiddleware(...)`   | Runtime tool-result middleware          |
+| `api.registerMemoryPromptSupplement(builder)`  | Additive memory-adjacent prompt section |
+| `api.registerMemoryCorpusSupplement(adapter)`  | Additive memory search/read corpus      |
+
+### Host hooks for workflow plugins
+
+Host hooks are the SDK seams for plugins that need to participate in the host
+lifecycle rather than only adding a provider, channel, or tool. They are
+generic contracts; Plan Mode can use them, but so can approval workflows,
+workspace policy gates, background monitors, setup wizards, and UI companion
+plugins.
+
+| Method                                                                   | Contract it owns                                                                  |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `api.registerSessionExtension(...)`                                      | Plugin-owned, JSON-compatible session state projected through Gateway sessions    |
+| `api.enqueueNextTurnInjection(...)`                                      | Durable exactly-once context injected into the next agent turn for one session    |
+| `api.registerTrustedToolPolicy(...)`                                     | Bundled/trusted pre-plugin tool policy that can block or rewrite tool params      |
+| `api.registerToolMetadata(...)`                                          | Tool catalog display metadata without changing the tool implementation            |
+| `api.registerCommand(...)`                                               | Scoped plugin commands; command results can set `continueAgent: true`             |
+| `api.registerControlUiDescriptor(...)`                                   | Control UI contribution descriptors for session, tool, run, or settings surfaces  |
+| `api.registerRuntimeLifecycle(...)`                                      | Cleanup callbacks for plugin-owned runtime resources on reset/delete/reload paths |
+| `api.registerAgentEventSubscription(...)`                                | Sanitized event subscriptions for workflow state and monitors                     |
+| `api.setRunContext(...)` / `getRunContext(...)` / `clearRunContext(...)` | Per-run plugin scratch state cleared on terminal run lifecycle                    |
+| `api.registerSessionSchedulerJob(...)`                                   | Plugin-owned session scheduler job records with deterministic cleanup             |
+
+The contracts intentionally split authority:
+
+- External plugins can own session extensions, UI descriptors, commands, tool
+  metadata, next-turn injections, and normal hooks.
+- Trusted tool policies run before ordinary `before_tool_call` hooks and are
+  bundled-only because they participate in host safety policy.
+- Reserved command ownership is bundled-only. External plugins should use their
+  own command names or aliases.
+- `allowPromptInjection=false` disables prompt-mutating hooks including
+  `agent_turn_prepare`, `before_prompt_build`, `heartbeat_prompt_contribution`,
+  prompt fields from legacy `before_agent_start`, and
+  `enqueueNextTurnInjection`.
+
+Examples of non-Plan consumers:
+
+| Plugin archetype             | Hooks used                                                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Approval workflow            | Session extension, command continuation, next-turn injection, UI descriptor                                                            |
+| Budget/workspace policy gate | Trusted tool policy, tool metadata, session projection                                                                                 |
+| Background lifecycle monitor | Runtime lifecycle cleanup, agent event subscription, session scheduler ownership/cleanup, heartbeat prompt contribution, UI descriptor |
+| Setup or onboarding wizard   | Session extension, scoped commands, Control UI descriptor                                                                              |
 
 <Note>
   Reserved core admin namespaces (`config.*`, `exec.approvals.*`, `wizard.*`,
@@ -108,16 +165,44 @@ methods:
   plugin-owned methods.
 </Note>
 
-<Accordion title="When to use registerEmbeddedExtensionFactory">
-  Use `api.registerEmbeddedExtensionFactory(...)` when a plugin needs Pi-native
-  event timing during OpenClaw embedded runs — for example async `tool_result`
-  rewrites that must happen before the final tool-result message is emitted.
+<Accordion title="When to use tool-result middleware">
+  Bundled plugins can use `api.registerAgentToolResultMiddleware(...)` when
+  they need to rewrite a tool result after execution and before the runtime
+  feeds that result back into the model. This is the trusted runtime-neutral
+  seam for async output reducers such as tokenjuice.
 
-This is a bundled-plugin seam today: only bundled plugins may register one,
-and they must declare `contracts.embeddedExtensionFactories: ["pi"]` in
-`openclaw.plugin.json`. Keep normal OpenClaw plugin hooks for everything that
-does not require that lower-level seam.
+Bundled plugins must declare `contracts.agentToolResultMiddleware` for each
+targeted runtime, for example `["pi", "codex"]`. External plugins
+cannot register this middleware; keep normal OpenClaw plugin hooks for work
+that does not need pre-model tool-result timing. The old Pi-only embedded
+extension factory registration path has been removed.
 </Accordion>
+
+### Gateway discovery registration
+
+`api.registerGatewayDiscoveryService(...)` lets a plugin advertise the active
+Gateway on a local discovery transport such as mDNS/Bonjour. OpenClaw calls the
+service during Gateway startup when local discovery is enabled, passes the
+current Gateway ports and non-secret TXT hint data, and calls the returned
+`stop` handler during Gateway shutdown.
+
+```typescript
+api.registerGatewayDiscoveryService({
+  id: "my-discovery",
+  async advertise(ctx) {
+    const handle = await startMyAdvertiser({
+      gatewayPort: ctx.gatewayPort,
+      tls: ctx.gatewayTlsEnabled,
+      displayName: ctx.machineDisplayName,
+    });
+    return { stop: () => handle.stop() };
+  },
+});
+```
+
+Gateway discovery plugins must not treat advertised TXT values as secrets or
+authentication. Discovery is a routing hint; Gateway auth and TLS pinning still
+own trust.
 
 ### CLI registration metadata
 
@@ -201,6 +286,9 @@ AI CLI backend such as `codex-cli`.
 | -------------------------------------------- | ----------------------------- |
 | `api.on(hookName, handler, opts?)`           | Typed lifecycle hook          |
 | `api.onConversationBindingResolved(handler)` | Conversation binding callback |
+
+See [Plugin hooks](/plugins/hooks) for examples, common hook names, and guard
+semantics.
 
 ### Hook decision semantics
 
